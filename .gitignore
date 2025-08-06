@@ -30,3 +30,7 @@ compile_commands.json
 build*/
 *.zst
 *.AppImage
+
+# To track flake.nix which might be ignored
+!flake.nix
+!flake.lock
