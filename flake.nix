@@ -10,9 +10,52 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-      in
-      {
-        packages.default = pkgs.stdenv.mkDerivation rec {
+
+        # --- Core CLI-only package ---
+        # This version is minimal and suitable for CI.
+        # It disables the GUI build to avoid pulling in Qt/KDE.
+        heaptrack-cli = pkgs.stdenv.mkDerivation rec {
+          pname = "heaptrack-cli";
+          version = "master";
+
+          src = ./.;
+
+          nativeBuildInputs = with pkgs; [
+            cmake
+            makeWrapper
+            kdePackages.extra-cmake-modules
+          ];
+
+          buildInputs = with pkgs; [
+            boost
+            zlib
+            libunwind
+            elfutils
+            rustc-demangle
+          ];
+
+          # This is the key to disabling the GUI and its heavy dependencies.
+          cmakeFlags = [ "-DHEAPTRACK_BUILD_GUI=OFF" ];
+
+          # We only need to wrap heaptrack_interpret now.
+          postInstall = ''
+            local demangler_libs="${pkgs.lib.makeLibraryPath [ pkgs.rustc-demangle ]}"
+            wrapProgram $out/lib/heaptrack/libexec/heaptrack_interpret \
+              --prefix LD_LIBRARY_PATH : "$demangler_libs"
+          '';
+
+          meta = with pkgs.lib; {
+            description = "A heap memory profiler for Linux (CLI tools only)";
+            homepage = "https://github.com/KDE/heaptrack";
+            license = with licenses; [ lgpl21Plus gpl2Plus ];
+            maintainers = with maintainers; [ ];
+            platforms = platforms.linux;
+          };
+        };
+
+        # --- Full package with GUI ---
+        # This is the original package, for developers who want the GUI.
+        heaptrack-full = pkgs.stdenv.mkDerivation rec {
           pname = "heaptrack";
           version = "master";
 
@@ -24,13 +67,11 @@
             kdePackages.wrapQtAppsHook
           ];
 
-          buildInputs = with pkgs; [
-            boost
-            zlib
-            libunwind
-            elfutils
-            rustc-demangle
+          buildInputs = [
+            # Re-use the build inputs from the CLI version
+            heaptrack-cli.buildInputs
           ] ++ (with pkgs.kdePackages; [
+            # Add the GUI-specific dependencies
             kcoreaddons
             kwidgetsaddons
             ki18n
@@ -66,15 +107,34 @@
           };
         };
 
-        packages.heaptrack = self.packages.${system}.default;
-
-        apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
+      in
+      {
+        # Export both packages
+        packages = {
+          heaptrack = heaptrack-full;
+          heaptrack-cli = heaptrack-cli;
+          # The default package is the full one, for convenience
+          default = heaptrack-full;
         };
 
+        # Define apps for both versions
+        apps = {
+          default = flake-utils.lib.mkApp {
+            drv = self.packages.${system}.default;
+          };
+          heaptrack = flake-utils.lib.mkApp {
+            drv = self.packages.${system}.heaptrack;
+          };
+          # This is the app we will use in CI
+          heaptrack-cli = flake-utils.lib.mkApp {
+            drv = self.packages.${system}.heaptrack-cli;
+            exePath = "/bin/heaptrack";
+          };
+        };
+
+        # The devShell can provide the full build environment
         devShells.default = pkgs.mkShell {
-          buildInputs = self.packages.${system}.default.buildInputs
-                     ++ self.packages.${system}.default.nativeBuildInputs;
+          buildInputs = heaptrack-full.buildInputs ++ heaptrack-full.nativeBuildInputs;
         };
       });
 }
